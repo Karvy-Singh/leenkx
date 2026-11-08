@@ -225,3 +225,4 @@ node_modules/
 whatsapp_export.json
 .baileys_history.json
 .baileys_auth_v5/
+.data/
