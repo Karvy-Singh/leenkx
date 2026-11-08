@@ -19,9 +19,7 @@
         margin: 0;
         min-height: 100vh;
         color: var(--ink);
-        background:
-          linear-gradient(90deg, transparent 49.8%, rgba(23,32,28,.05) 50%, transparent 50.2%),
-          var(--paper);
+        background: var(--paper);
         font-family: Georgia, "Times New Roman", serif;
       }
       main { width: min(920px, calc(100% - 32px)); margin: 0 auto; padding: 64px 0 80px; }
@@ -31,7 +29,6 @@
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
       .eyebrow { margin: 0 0 8px; color: var(--accent); font-size: .75rem; text-transform: uppercase; letter-spacing: .14em; }
-      .intro { max-width: 330px; color: var(--muted); line-height: 1.5; margin: 0; }
       .panel { background: var(--panel); border: 1px solid var(--line); box-shadow: 7px 7px 0 var(--ink); }
       form { display: grid; grid-template-columns: 1fr 1fr 110px auto; gap: 12px; padding: 18px; align-items: end; }
       label { display: grid; gap: 7px; color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; }
@@ -51,7 +48,7 @@
       .status { font-size: .82rem; color: var(--muted); line-height: 1.6; }
       .status strong { color: var(--ink); }
       #qr { width: 180px; height: 180px; image-rendering: pixelated; border: 8px solid white; display: none; }
-      .actions { margin: 30px 0 18px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+      .actions { margin: 30px 0 18px; }
       .count { color: var(--muted); font-style: italic; }
       #results { display: grid; gap: 10px; }
       .result { background: rgba(251,249,242,.74); border: 1px solid var(--line); padding: 16px 18px; display: grid; gap: 8px; }
@@ -72,16 +69,15 @@
     <main>
       <header>
         <div>
-          <p class="eyebrow">WhatsApp link audit</p>
+          <p class="eyebrow">Audit for links exchanged in WhatsApp chats</p>
           <h1>Left<br />unanswered.</h1>
         </div>
-        <p class="intro">Find links sent in the last seven days that received neither a direct reply nor a reaction from the receiving party.</p>
       </header>
 
       <section class="panel">
         <form id="config-form">
-          <label>Sender, with country code<input id="sender" inputmode="numeric" autocomplete="tel" placeholder="919560965811" required /></label>
-          <label>Receiver, with country code<input id="receiver" inputmode="numeric" autocomplete="tel" placeholder="917060029183" required /></label>
+          <label>Sender, with country code<input id="sender" inputmode="numeric" autocomplete="tel" placeholder="Country code + number" required /></label>
+          <label>Receiver, with country code<input id="receiver" inputmode="numeric" autocomplete="tel" placeholder="Country code + number" required /></label>
           <label>Days back<input id="days" type="number" min="1" max="90" value="7" required /></label>
           <button type="submit" id="connect">Connect</button>
         </form>
@@ -93,7 +89,6 @@
 
       <div class="actions">
         <span class="count" id="count">No search yet</span>
-        <button id="search" disabled>Search links</button>
       </div>
       <section id="results" aria-live="polite"></section>
     </main>
@@ -106,18 +101,22 @@
       const session = document.querySelector('#session');
       const statusNode = document.querySelector('#status');
       const qr = document.querySelector('#qr');
-      const searchButton = document.querySelector('#search');
       const results = document.querySelector('#results');
       const count = document.querySelector('#count');
       let pollTimer;
+      let ready = false;
+      let searching = false;
+      let searchAgain = false;
+      let daysTimer;
       let currentSender = localStorage.getItem('sender') || '';
+      let currentReceiver = localStorage.getItem('receiver') || '';
       let token = localStorage.getItem('owner-token');
       if (!token) {
         token = crypto.randomUUID() + crypto.randomUUID();
         localStorage.setItem('owner-token', token);
       }
       senderInput.value = currentSender;
-      receiverInput.value = localStorage.getItem('receiver') || '';
+      receiverInput.value = currentReceiver;
       daysInput.value = localStorage.getItem('days') || '7';
 
       const digits = (value) => value.replace(/\D/g, '');
@@ -127,6 +126,7 @@
           headers: {
             'content-type': 'application/json',
             'x-sender': currentSender,
+            'x-receiver': currentReceiver,
             authorization: `Bearer ${token}`,
             ...options.headers,
           },
@@ -149,7 +149,10 @@
         statusNode.innerHTML = `<strong>${data.status || 'waiting'}</strong><br>${labels[data.status] || 'Waiting for WhatsApp…'}`;
         qr.src = data.qr || '';
         qr.style.display = data.qr ? 'block' : 'none';
-        searchButton.disabled = data.status !== 'ready';
+        if (data.status === 'ready' && !ready) {
+          ready = true;
+          void searchLinks();
+        }
         if (data.status === 'ready' || data.status === 'logged-out' || data.status === 'error') clearInterval(pollTimer);
       }
 
@@ -161,16 +164,16 @@
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
         currentSender = digits(senderInput.value);
-        const receiver = digits(receiverInput.value);
+        currentReceiver = digits(receiverInput.value);
         const days = Math.min(90, Math.max(1, Number(daysInput.value) || 7));
         localStorage.setItem('sender', currentSender);
-        localStorage.setItem('receiver', receiver);
+        localStorage.setItem('receiver', currentReceiver);
         localStorage.setItem('days', String(days));
         session.classList.add('visible');
-        searchButton.disabled = true;
+        ready = false;
         statusNode.textContent = 'Starting…';
         try {
-          await api('/api/config', { method: 'POST', body: JSON.stringify({ sender: currentSender, receiver }) });
+          await api('/api/config', { method: 'POST', body: '{}' });
           clearInterval(pollTimer);
           await poll();
           pollTimer = setInterval(poll, 2000);
@@ -179,9 +182,14 @@
         }
       });
 
-      searchButton.addEventListener('click', async () => {
-        searchButton.disabled = true;
-        searchButton.textContent = 'Searching…';
+      async function searchLinks() {
+        if (!ready) return;
+        if (searching) {
+          searchAgain = true;
+          return;
+        }
+        searching = true;
+        count.textContent = 'Searching…';
         results.innerHTML = '';
         try {
           const days = Math.min(90, Math.max(1, Number(daysInput.value) || 7));
@@ -212,10 +220,24 @@
           results.innerHTML = `<div class="empty"></div>`;
           results.firstElementChild.textContent = error.message;
         } finally {
-          searchButton.disabled = false;
-          searchButton.textContent = 'Search links';
+          searching = false;
+          if (searchAgain) {
+            searchAgain = false;
+            void searchLinks();
+          }
         }
+      }
+
+      daysInput.addEventListener('input', () => {
+        const days = Math.min(90, Math.max(1, Number(daysInput.value) || 7));
+        localStorage.setItem('days', String(days));
+        clearTimeout(daysTimer);
+        daysTimer = setTimeout(() => void searchLinks(), 300);
       });
+
+      if (currentSender && currentReceiver) {
+        queueMicrotask(() => form.requestSubmit());
+      }
     </script>
   </body>
 </html>

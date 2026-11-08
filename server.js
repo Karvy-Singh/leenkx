@@ -92,9 +92,12 @@ function decrypt(payload) {
 }
 
 class WhatsAppSession {
-  constructor(sender) {
-    this.sender = sender;
+  constructor(participants) {
+    this.participants = participants;
+    this.sessionId = [...participants].sort().join(':');
+    this.sender = null;
     this.receiver = null;
+    this.loggedInNumber = null;
     this.ownerHash = null;
     this.auth = { creds: initAuthCreds(), keys: {} };
     this.messages = new Map();
@@ -109,14 +112,14 @@ class WhatsAppSession {
     this.saving = Promise.resolve();
   }
 
-  static async create(sender) {
-    const session = new WhatsAppSession(sender);
+  static async create(participants) {
+    const session = new WhatsAppSession(participants);
     await session.load();
     return session;
   }
 
   get filePath() {
-    return path.join(dataDirectory, `${hash(this.sender).toString('hex')}.enc`);
+    return path.join(dataDirectory, `${hash(this.sessionId).toString('hex')}.enc`);
   }
 
   async load() {
@@ -126,6 +129,8 @@ class WhatsAppSession {
         BufferJSON.reviver,
       );
       this.receiver = restored.receiver;
+      this.sender = restored.sender;
+      this.loggedInNumber = restored.loggedInNumber;
       this.ownerHash = restored.ownerHash;
       this.auth = restored.auth;
       this.historyComplete = restored.historyComplete;
@@ -156,7 +161,9 @@ class WhatsAppSession {
     const data = JSON.stringify(
       {
         ownerHash: this.ownerHash,
+        sender: this.sender,
         receiver: this.receiver,
+        loggedInNumber: this.loggedInNumber,
         auth: this.auth,
         historyComplete: this.historyComplete,
         messages: [...this.messages.values()],
@@ -200,7 +207,8 @@ class WhatsAppSession {
     };
   }
 
-  configure(receiver) {
+  configure(sender, receiver) {
+    this.sender = sender;
     this.receiver = receiver;
     this.scheduleSave();
     this.connect();
@@ -250,10 +258,15 @@ class WhatsAppSession {
       if (update.connection === 'open') {
         this.qrImage = null;
         this.status = this.historyComplete ? 'ready' : 'syncing';
-        const loggedIn = digits(socket.user?.id);
-        if (loggedIn && loggedIn !== this.sender) {
-          this.error = `Scanned account is ${loggedIn}, not ${this.sender}`;
+        const accountIds = [socket.user?.id, socket.user?.lid]
+          .map(digits)
+          .filter(Boolean);
+        const loggedIn = accountIds.find((number) => this.participants.includes(number));
+        if (!loggedIn && accountIds.length) {
+          this.error = `Scanned account ${accountIds[0]} is not one of the selected numbers`;
           this.status = 'error';
+        } else if (loggedIn) {
+          this.loggedInNumber = loggedIn;
         }
         this.scheduleSave();
       }
@@ -287,23 +300,29 @@ class WhatsAppSession {
   }
 
   search(cutoff) {
+    if (!this.loggedInNumber) return [];
+    const counterpart = this.participants.find(
+      (number) => number !== this.loggedInNumber,
+    );
     const relevant = [...this.messages.values()].filter(
-      (item) => matches(item.key, this.receiver) && item.messageTimestamp >= cutoff,
+      (item) => matches(item.key, counterpart) && item.messageTimestamp >= cutoff,
     );
     const answered = new Set();
     for (const item of relevant) {
       const body = unwrap(item.message);
       const reaction = body.reactionMessage;
-      if (reaction?.key?.id && !item.key.fromMe && reaction.text) {
+      const author = item.key.fromMe ? this.loggedInNumber : counterpart;
+      if (reaction?.key?.id && author === this.receiver && reaction.text) {
         answered.add(reaction.key.id);
       }
       const replyId = body.extendedTextMessage?.contextInfo?.stanzaId;
-      if (replyId && !item.key.fromMe) answered.add(replyId);
+      if (replyId && author === this.receiver) answered.add(replyId);
     }
 
     const links = [];
     for (const item of relevant) {
-      if (!item.key.fromMe || answered.has(item.key.id)) continue;
+      const author = item.key.fromMe ? this.loggedInNumber : counterpart;
+      if (author !== this.sender || answered.has(item.key.id)) continue;
       const text = textOf(unwrap(item.message));
       if (text === null) continue;
       for (const url of text.match(urlPattern) || []) {
@@ -325,11 +344,12 @@ class WhatsAppSession {
   }
 }
 
-async function getSession(sender) {
-  if (!sessions.has(sender)) {
-    sessions.set(sender, WhatsAppSession.create(sender));
+async function getSession(sender, receiver) {
+  const sessionId = [sender, receiver].sort().join(':');
+  if (!sessions.has(sessionId)) {
+    sessions.set(sessionId, WhatsAppSession.create([sender, receiver]));
   }
-  return sessions.get(sender);
+  return sessions.get(sessionId);
 }
 
 async function readJson(request) {
@@ -354,25 +374,26 @@ function json(response, data, status = 200) {
 
 async function api(request, response) {
   const sender = String(request.headers['x-sender'] || '').replace(/\D/g, '');
+  const receiver = String(request.headers['x-receiver'] || '').replace(/\D/g, '');
   const token = String(request.headers.authorization || '').replace(/^Bearer /, '');
-  if (!/^\d{8,15}$/.test(sender) || !token) {
-    json(response, { error: 'Valid sender and owner token required' }, 400);
+  if (
+    !/^\d{8,15}$/.test(sender) ||
+    !/^\d{8,15}$/.test(receiver) ||
+    sender === receiver ||
+    !token
+  ) {
+    json(response, { error: 'Two different phone numbers and owner token are required' }, 400);
     return;
   }
-  const session = await getSession(sender);
+  const session = await getSession(sender, receiver);
   if (!session.authorize(token)) {
     json(response, { error: 'This sender belongs to another browser session' }, 401);
     return;
   }
 
   if (request.url === '/api/config' && request.method === 'POST') {
-    const input = await readJson(request);
-    const receiver = String(input.receiver || '').replace(/\D/g, '');
-    if (!/^\d{8,15}$/.test(receiver)) {
-      json(response, { error: 'Valid receiver number required' }, 400);
-      return;
-    }
-    session.configure(receiver);
+    await readJson(request);
+    session.configure(sender, receiver);
     json(response, { status: session.status });
     return;
   }
@@ -439,7 +460,7 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen(port, '0.0.0.0', () => {
+server.listen(port, '127.0.0.1', () => {
   console.log(`Unreplied Links running at http://localhost:${port}`);
 });
 
