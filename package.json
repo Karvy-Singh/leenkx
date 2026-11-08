@@ -1,7 +1,8 @@
 {
   "type": "module",
   "scripts": {
-    "export": "node export_week.js"
+    "export": "node export_week.js",
+    "links": "node unreplied_links.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc14",

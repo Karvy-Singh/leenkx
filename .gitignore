@@ -221,4 +221,6 @@ __marimo__/
 
 node_modules/
 whatsapp_export.json
+.baileys_history.json
 .baileys_auth_v4/
+.baileys_auth_v5/
