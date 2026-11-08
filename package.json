@@ -1,12 +1,16 @@
 {
+  "name": "unreplied-links",
+  "private": true,
   "type": "module",
   "scripts": {
-    "export": "node export_week.js",
-    "links": "node unreplied_links.js"
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "types": "wrangler types"
   },
-  "dependencies": {
-    "@whiskeysockets/baileys": "7.0.0-rc14",
-    "pino": "^9.6.0",
-    "qrcode-terminal": "^0.12.0"
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "latest",
+    "wrangler": "latest"
   }
 }

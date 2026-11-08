@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Unreplied links</title>
+    <style>
+      :root {
+        --paper: #f3efe5;
+        --ink: #17201c;
+        --muted: #68716c;
+        --line: #c9c7bd;
+        --accent: #e75d2f;
+        --panel: #fbf9f2;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--ink);
+        background:
+          linear-gradient(90deg, transparent 49.8%, rgba(23,32,28,.05) 50%, transparent 50.2%),
+          var(--paper);
+        font-family: Georgia, "Times New Roman", serif;
+      }
+      main { width: min(920px, calc(100% - 32px)); margin: 0 auto; padding: 64px 0 80px; }
+      header { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 30px; }
+      h1 { margin: 0; font-size: clamp(2.3rem, 7vw, 5.2rem); line-height: .86; letter-spacing: -.06em; font-weight: 500; }
+      .eyebrow, label, button, .status, .meta, .empty {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .eyebrow { margin: 0 0 8px; color: var(--accent); font-size: .75rem; text-transform: uppercase; letter-spacing: .14em; }
+      .intro { max-width: 330px; color: var(--muted); line-height: 1.5; margin: 0; }
+      .panel { background: var(--panel); border: 1px solid var(--line); box-shadow: 7px 7px 0 var(--ink); }
+      form { display: grid; grid-template-columns: 1fr 1fr 110px auto; gap: 12px; padding: 18px; align-items: end; }
+      label { display: grid; gap: 7px; color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; }
+      input {
+        width: 100%; border: 0; border-bottom: 1px solid var(--ink); background: transparent;
+        color: var(--ink); padding: 10px 2px; border-radius: 0; font: 1.05rem ui-monospace, monospace; outline: none;
+      }
+      input:focus { border-color: var(--accent); }
+      button {
+        border: 1px solid var(--ink); background: var(--ink); color: var(--panel); padding: 12px 18px;
+        min-height: 43px; cursor: pointer; font-weight: 700; text-transform: uppercase; letter-spacing: .08em;
+      }
+      button:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
+      button:disabled { opacity: .35; cursor: not-allowed; }
+      .session { display: none; grid-template-columns: 1fr auto; gap: 24px; align-items: center; border-top: 1px solid var(--line); padding: 18px; }
+      .session.visible { display: grid; }
+      .status { font-size: .82rem; color: var(--muted); line-height: 1.6; }
+      .status strong { color: var(--ink); }
+      #qr { width: 180px; height: 180px; image-rendering: pixelated; border: 8px solid white; display: none; }
+      .actions { margin: 30px 0 18px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+      .count { color: var(--muted); font-style: italic; }
+      #results { display: grid; gap: 10px; }
+      .result { background: rgba(251,249,242,.74); border: 1px solid var(--line); padding: 16px 18px; display: grid; gap: 8px; }
+      .result a { color: var(--ink); font-size: 1.08rem; overflow-wrap: anywhere; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+      .result a:hover { color: var(--accent); }
+      .meta { color: var(--muted); font-size: .72rem; }
+      .empty { border-top: 1px solid var(--line); padding: 22px 0; color: var(--muted); }
+      @media (max-width: 680px) {
+        main { padding-top: 34px; }
+        header { display: grid; }
+        form { grid-template-columns: 1fr; }
+        .session { grid-template-columns: 1fr; }
+        #qr { width: min(220px, 100%); height: auto; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">WhatsApp link audit</p>
+          <h1>Left<br />unanswered.</h1>
+        </div>
+        <p class="intro">Find links sent in the last seven days that received neither a direct reply nor a reaction from the receiving party.</p>
+      </header>
+
+      <section class="panel">
+        <form id="config-form">
+          <label>Sender, with country code<input id="sender" inputmode="numeric" autocomplete="tel" placeholder="919560965811" required /></label>
+          <label>Receiver, with country code<input id="receiver" inputmode="numeric" autocomplete="tel" placeholder="917060029183" required /></label>
+          <label>Days back<input id="days" type="number" min="1" max="90" value="7" required /></label>
+          <button type="submit" id="connect">Connect</button>
+        </form>
+        <div class="session" id="session">
+          <div class="status" id="status">Not connected.</div>
+          <img id="qr" alt="WhatsApp linked-device QR code" />
+        </div>
+      </section>
+
+      <div class="actions">
+        <span class="count" id="count">No search yet</span>
+        <button id="search" disabled>Search links</button>
+      </div>
+      <section id="results" aria-live="polite"></section>
+    </main>
+
+    <script type="module">
+      const form = document.querySelector('#config-form');
+      const senderInput = document.querySelector('#sender');
+      const receiverInput = document.querySelector('#receiver');
+      const daysInput = document.querySelector('#days');
+      const session = document.querySelector('#session');
+      const statusNode = document.querySelector('#status');
+      const qr = document.querySelector('#qr');
+      const searchButton = document.querySelector('#search');
+      const results = document.querySelector('#results');
+      const count = document.querySelector('#count');
+      let pollTimer;
+      let currentSender = localStorage.getItem('sender') || '';
+      let token = localStorage.getItem('owner-token');
+      if (!token) {
+        token = crypto.randomUUID() + crypto.randomUUID();
+        localStorage.setItem('owner-token', token);
+      }
+      senderInput.value = currentSender;
+      receiverInput.value = localStorage.getItem('receiver') || '';
+      daysInput.value = localStorage.getItem('days') || '7';
+
+      const digits = (value) => value.replace(/\D/g, '');
+      async function api(path, options = {}) {
+        const response = await fetch(path, {
+          ...options,
+          headers: {
+            'content-type': 'application/json',
+            'x-sender': currentSender,
+            authorization: `Bearer ${token}`,
+            ...options.headers,
+          },
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Request failed: ${response.status}`);
+        return data;
+      }
+
+      function showStatus(data) {
+        const labels = {
+          connecting: 'Opening a secure WhatsApp connection…',
+          qr: 'Scan this QR in WhatsApp → Linked devices.',
+          syncing: `Syncing seven-day history… ${data.progress || 0}%`,
+          ready: 'History ready. Search can begin.',
+          disconnected: 'Connection interrupted. Reconnecting…',
+          'logged-out': 'This linked device was logged out.',
+          error: data.error || 'Connection error.',
+        };
+        statusNode.innerHTML = `<strong>${data.status || 'waiting'}</strong><br>${labels[data.status] || 'Waiting for WhatsApp…'}`;
+        qr.src = data.qr || '';
+        qr.style.display = data.qr ? 'block' : 'none';
+        searchButton.disabled = data.status !== 'ready';
+        if (data.status === 'ready' || data.status === 'logged-out' || data.status === 'error') clearInterval(pollTimer);
+      }
+
+      async function poll() {
+        try { showStatus(await api('/api/status')); }
+        catch (error) { statusNode.textContent = error.message; }
+      }
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        currentSender = digits(senderInput.value);
+        const receiver = digits(receiverInput.value);
+        const days = Math.min(90, Math.max(1, Number(daysInput.value) || 7));
+        localStorage.setItem('sender', currentSender);
+        localStorage.setItem('receiver', receiver);
+        localStorage.setItem('days', String(days));
+        session.classList.add('visible');
+        searchButton.disabled = true;
+        statusNode.textContent = 'Starting…';
+        try {
+          await api('/api/config', { method: 'POST', body: JSON.stringify({ sender: currentSender, receiver }) });
+          clearInterval(pollTimer);
+          await poll();
+          pollTimer = setInterval(poll, 2000);
+        } catch (error) {
+          statusNode.textContent = error.message;
+        }
+      });
+
+      searchButton.addEventListener('click', async () => {
+        searchButton.disabled = true;
+        searchButton.textContent = 'Searching…';
+        results.innerHTML = '';
+        try {
+          const days = Math.min(90, Math.max(1, Number(daysInput.value) || 7));
+          const cutoff = new Date();
+          cutoff.setHours(0, 0, 0, 0);
+          cutoff.setDate(cutoff.getDate() - days);
+          const data = await api('/api/search', {
+            method: 'POST',
+            body: JSON.stringify({ cutoff: cutoff.toISOString() }),
+          });
+          count.textContent = `${data.links.length} unreplied link${data.links.length === 1 ? '' : 's'}`;
+          if (!data.links.length) results.innerHTML = '<div class="empty">Everything received a reply or reaction.</div>';
+          for (const link of data.links) {
+            const article = document.createElement('article');
+            article.className = 'result';
+            const anchor = document.createElement('a');
+            anchor.href = link.url;
+            anchor.target = '_blank';
+            anchor.rel = 'noopener noreferrer';
+            anchor.textContent = link.url;
+            const meta = document.createElement('div');
+            meta.className = 'meta';
+            meta.textContent = new Date(link.timestamp).toLocaleString();
+            article.append(anchor, meta);
+            results.append(article);
+          }
+        } catch (error) {
+          results.innerHTML = `<div class="empty"></div>`;
+          results.firstElementChild.textContent = error.message;
+        } finally {
+          searchButton.disabled = false;
+          searchButton.textContent = 'Search links';
+        }
+      });
+    </script>
+  </body>
+</html>
