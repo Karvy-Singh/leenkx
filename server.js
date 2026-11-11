@@ -92,13 +92,13 @@ function decrypt(payload) {
 }
 
 class WhatsAppSession {
-  constructor(participants) {
+  constructor(participants, sessionId, ownerHash) {
     this.participants = participants;
-    this.sessionId = [...participants].sort().join(':');
+    this.sessionId = sessionId;
     this.sender = null;
     this.receiver = null;
     this.loggedInNumber = null;
-    this.ownerHash = null;
+    this.ownerHash = ownerHash;
     this.auth = { creds: initAuthCreds(), keys: {} };
     this.messages = new Map();
     this.socket = null;
@@ -112,8 +112,8 @@ class WhatsAppSession {
     this.saving = Promise.resolve();
   }
 
-  static async create(participants) {
-    const session = new WhatsAppSession(participants);
+  static async create(participants, sessionId, ownerHash) {
+    const session = new WhatsAppSession(participants, sessionId, ownerHash);
     await session.load();
     return session;
   }
@@ -122,31 +122,51 @@ class WhatsAppSession {
     return path.join(dataDirectory, `${hash(this.sessionId).toString('hex')}.enc`);
   }
 
+  get legacyFilePath() {
+    const sessionId = [...this.participants].sort().join(':');
+    return path.join(dataDirectory, `${hash(sessionId).toString('hex')}.enc`);
+  }
+
   async load() {
+    let restored;
+    let migrated = false;
     try {
-      const restored = JSON.parse(
+      restored = JSON.parse(
         decrypt(await fs.readFile(this.filePath)).toString(),
         BufferJSON.reviver,
       );
-      this.receiver = restored.receiver;
-      this.sender = restored.sender;
-      this.loggedInNumber = restored.loggedInNumber;
-      this.ownerHash = restored.ownerHash;
-      this.auth = restored.auth;
-      this.historyComplete = restored.historyComplete;
-      this.messages = new Map(restored.messages.map((item) => [item.key.id, item]));
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
+      try {
+        restored = JSON.parse(
+          decrypt(await fs.readFile(this.legacyFilePath)).toString(),
+          BufferJSON.reviver,
+        );
+        migrated = true;
+      } catch (legacyError) {
+        if (legacyError.code !== 'ENOENT') throw legacyError;
+        return;
+      }
     }
+    if (
+      restored.ownerHash !== this.ownerHash ||
+      restored.sender !== this.participants[0] ||
+      restored.receiver !== this.participants[1]
+    ) {
+      if (migrated) return;
+      throw new Error('Stored session identity does not match its session key');
+    }
+    this.receiver = restored.receiver;
+    this.sender = restored.sender;
+    this.loggedInNumber = restored.loggedInNumber;
+    this.auth = restored.auth;
+    this.historyComplete = restored.historyComplete;
+    this.messages = new Map(restored.messages.map((item) => [item.key.id, item]));
+    if (migrated) await this.save();
   }
 
   authorize(token) {
     const provided = hash(token);
-    if (!this.ownerHash) {
-      this.ownerHash = provided.toString('hex');
-      this.scheduleSave();
-      return true;
-    }
     const expected = Buffer.from(this.ownerHash, 'hex');
     return expected.length === provided.length && timingSafeEqual(expected, provided);
   }
@@ -344,10 +364,14 @@ class WhatsAppSession {
   }
 }
 
-async function getSession(sender, receiver) {
-  const sessionId = [sender, receiver].sort().join(':');
+async function getSession(sender, receiver, token) {
+  const ownerHash = hash(token).toString('hex');
+  const sessionId = `${sender}:${receiver}:${ownerHash}`;
   if (!sessions.has(sessionId)) {
-    sessions.set(sessionId, WhatsAppSession.create([sender, receiver]));
+    sessions.set(
+      sessionId,
+      WhatsAppSession.create([sender, receiver], sessionId, ownerHash),
+    );
   }
   return sessions.get(sessionId);
 }
@@ -385,9 +409,9 @@ async function api(request, response) {
     json(response, { error: 'Two different phone numbers and owner token are required' }, 400);
     return;
   }
-  const session = await getSession(sender, receiver);
+  const session = await getSession(sender, receiver, token);
   if (!session.authorize(token)) {
-    json(response, { error: 'This sender belongs to another browser session' }, 401);
+    json(response, { error: 'Invalid browser session' }, 401);
     return;
   }
 
