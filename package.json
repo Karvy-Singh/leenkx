@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "pm2": "pm2 start ecosystem.config.cjs"
+    "pm2": "pm2 start ecosystem.config.cjs",
+    "postinstall": "node scripts/patch-baileys-presence.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc14",
